@@ -3,7 +3,7 @@ This project uses supervised machine learning to classify mushrooms as edible or
 
 ## 🔍 Summary
 - Built classification models in R
-- Evaluated performance using ROC AUC (area under curve)
+- Evaluated performance using ROC AUC (area under curve) and confusion matrix
 - Compared model results to identify best fit
 
 ## 🚀 How to Run
@@ -20,3 +20,10 @@ OR
 - `finalproject.Rmd`: Source R Markdown file used to generate the report
 - `finalproject.html`: Rendered HTML report containing analysis results
 -  Files ending in .rda: Saved results from models (to increase efficiency)
+
+## ✅ Results
+- Accuracy: 99%
+- Elastic Net and Random Forest models performed best
+
+## 🧪 Tools
+tidyverse, tidymodels, ggplot2, etc.
