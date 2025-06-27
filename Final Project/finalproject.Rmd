@@ -1,0 +1,388 @@
+---
+title: "Predicting Mushroom Toxicity for Human Consumption"
+author: "Rachel Zeng"
+date: "UCSB Spring 2025"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+For this project, we will build machine learning models to predict if a mushroom is edible or poisonous based on its physical characteristics. We will use data from the UCI Machine Learning Repository which has 8124 mushroom observations with 22 attributes. Since the outcome variable is categorical (edible or poisonous), we will use classification and compare the performance of several models to see which method works best.
+
+Mushrooms are part of the fungi kingdom and grow in diverse places. These organisms have been used as food and medicine in human society. While many are edible and nutritious, most mushrooms are toxic or even deadly to human beings. Poisonous mushrooms can look very similar to edible ones, so it is hard to identify without expert knowledge. Mycologists, scientists who study fungi, rely on physical characteristics like cap shape, gill color, odor, and habitat to identify species. Because the cost of misidentifying mushrooms can be fatal for an average person, a machine learning model could be useful.
+
+The models I will implement are logistic regression, elastic net, decision tree and random forest. Logistic regression is a statistical model for binary classification that estimates the probability of a class using a logistic function. Elastic net is a regression method that has the penalties of lasso and ridge regression to perform variable selection. Decision trees are simple models that split the data based on feature values, while random forests build multiple trees and average their results to reduce overfitting and improve accuracy. By comparing these models using cross-validation, I will identify the one that generalizes best to new mushroom data and provides interpretable insights into what makes a mushroom safe or dangerous to eat.
+
+# Data Description
+
+The mushroom data used in this project is a widely-used resource for machine learning projects. It was originally collected by the U.S. Department of Agriculture’s Mushroom Research Center and later compiled by researchers for public use.
+
+To reduce computational time, I selected a random sample of 1,000 observations from the full mushroom dataset. The complete dataset can be found below:
+
+Mushroom [Dataset]. (1981). UCI Machine Learning Repository. https://doi.org/10.24432/C5959T.
+
+# Mushroom Features
+
+The dataset has many mushroom anatomy features used in identification. The cap is the top of the mushroom, often umbrella-shaped. The bottom of the cap are the gills which produce and release spores, which are like seeds for fungal reproduction. The stalk which is the stem supports the cap and can be different in thickness and shape. Around the stalk is the ring, which is a protective covering, a veil. The veil might be attached to the cap or stalk depending on the species. These features are important for species classification and toxicity detection.
+
+# Exploratory Data Analysis
+
+First, we will start by reading the dataset and adding variable names to our data. We will sample 1000 observations randomly to get our data needed for the machine learning methods. 
+
+```{r}
+suppressMessages(library(dplyr))
+
+set.seed(43920)
+
+mushroom <- read.csv("agaricus-lepiota.data", header = FALSE, 
+                     stringsAsFactors = TRUE)
+colnames(mushroom) <- c("poisonous", "cap_shape", "cap_surface", "cap_color",
+  "bruises", "odor", "gill_attachment", "gill_spacing", "gill_size", "gill_color", "stalk_shape", "stalk_root", "stalk_surface_above_ring",
+  "stalk_surface_below_ring", "stalk_color_above_ring", "stalk_color_below_ring",
+  "veil_type", "veil_color", "ring_number", "ring_type", "spore_print_color",
+  "population", "habitat"
+)
+
+mushroom_data <- mushroom %>% 
+  select(-veil_type) %>% 
+  sample_n(1000)
+
+str(mushroom)
+
+mushroom_data %>% head()
+```
+
+Looking at our resulting dataset, all of our variables are categorical. We have 1 outcome variable and 21 features. Since veil-type seems to only be the value p=partial and constant in the data, we will remove the feature, as it will not help us predict toxicity.
+
+Let's see how our outcome variable is distributed:
+
+```{r}
+library(ggplot2)
+
+ggplot(data = mushroom_data, mapping = aes(x = poisonous)) +
+  geom_bar() +
+  xlab("Toxicity") +
+  ylab("Frequency")
+```
+
+The original big dataset had 51.8% edible and 48.2% poisonous mushrooms. It seems that our random sample is distributed similarly with the number of edible and poisonous being about the same, and the edible count is greater than poisonous.
+
+We should take a quick look at the distributions of few of our predictors, and see if there are any obvious ways to detect a mushroom's toxicity. 
+
+```{r}
+ggplot(mushroom_data, aes(x = cap_shape, fill = poisonous)) +
+  geom_bar(position = "fill") +
+  labs(title = "Cap Shape by Toxicity", x = "Cap Shape", y = "Proportion")
+```
+
+From the plot above, it seems that sunken and bell cap shaped mushrooms are likely edible while conical cap shaped is very likely poisonous. 
+
+```{r}
+ggplot(mushroom_data, aes(x = spore_print_color, fill = poisonous)) +
+  geom_bar(position = "fill") +
+  labs(title = "Spore Print Color by Toxicity", x = "Spore Print Color", y = "Proportion")
+```
+
+Spore print color looks like a good predictor for toxicity as all values lean heavily towards edible or poisonous. 
+
+While looking at the data set, specifically cap surface, I noticed that we only have one value of g=grooves which will have no variance when fitting the model. 
+
+```{r}
+sum(mushroom_data$cap_surface == "g")
+```
+
+We will need to drop variable levels like this since they add noise to the model and increase the risk of overfitting. Overfitting is when a model fits based on the training data too well with random noise that don’t actually help predict our outcome variable. They will especially negatively affect logistic regression and elastic net models as the dummy variables will have zero variance.
+
+According to the dataset website, we might have missing values in our data. Let's check:
+
+```{r}
+mushroom_data[mushroom_data == "?"] <- NA
+colSums(is.na(mushroom_data))
+mushroom_data <- droplevels(mushroom_data)
+```
+
+Our random sample has 303 missing values which are all from one predictor stalk root. This is a very big portion of our data, and all the missing data will prevent us from predicting toxicity accurately. Since our data set size is large and we have 20 predictors, we can remove stalk root instead of imputing, as it's missing 1/3 of its data and will unlikely improve the performance of the model. Imputing may negatively affect the model performance instead. 
+
+```{r}
+mushroom_data <- mushroom_data %>% 
+  select(-stalk_root)
+```
+
+
+# Setting Up Models
+
+To begin modeling, the mushroom data is split into training and testing sets with 80 and 20 percent of data. We will be using stratification (a way to split data) by poisonous to make sure that both classes were proportionally represented. The training data (mushroom_train) is used for model fitting, while the testing data (mushroom_test) is utilized for determining model performance.
+
+```{r}
+suppressMessages(library(tidyverse))
+suppressMessages(library(tidymodels))
+suppressMessages(library(ranger))
+
+mushroom_split <- initial_split(mushroom_data, prop = 0.8, strata = poisonous)
+mushroom_train <- training(mushroom_split)
+mushroom_test <- testing(mushroom_split)
+```
+
+Now that we finished data cleaning and splitting, we can set up the recipe.
+
+```{r}
+mushroom_recipe <- recipe(poisonous ~ ., data = mushroom_data) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_nzv(all_predictors()) %>% 
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors())
+```
+
+Since we are dealing with logistic regression and elastic net, I centered and scaled the features. Also, for these two models we need to drop near zero variance dummy variables using step_nzv(), specifically the dummy variable cap shape g = grooves. 
+
+# K-Fold Cross Validation
+
+Cross-validation tests how well a model performs. It can avoid overfitting and gives a better estimate of the metric of accuracy.
+
+To evaluate model performance more better, I used 10-fold cross-validation on the training set by creating mushroom_folds with the vfold_cv() function. I stratified by the poisonous variable to make sure that each fold maintained a good balance of poisonous and edible mushrooms.
+
+```{r}
+mushroom_folds <- vfold_cv(mushroom_train, v = 10, strata = poisonous)
+```
+
+# Model Building
+
+Now, let's test which models fit best for our data. We will be using logistic regression, elastic net, decision tree, and random forest. For performance evaluation, I chose the roc_auc metric. This metric is good for binary classification like our mushroom dataset. It measures the area under the ROC curve and true positive and false positive rates. 
+
+While the logistic regression model did not require hyperparameter tuning, the other models involved tuning parameters such as penalty, mixture, cost_complexity, mtry, trees, and min_n. 
+
+We defined the model and workflow along with the recipe, tune hyperparameters using cross-validation (except for logistic regression), select the best-performing fit, and finalize the workflow. The final tuned model was then fitted to the training data. Since running the models takes a long time, the results were saved to an RDA file.
+
+```{r}
+model_log <- logistic_reg() %>% 
+  set_mode("classification") %>%
+  set_engine("glm")
+
+model_elastic <- logistic_reg(mixture = tune(), 
+                      penalty = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("glmnet")
+
+model_tree <- decision_tree(mode = "classification", cost_complexity = tune()) %>%
+  set_engine("rpart")
+
+model_forest <- rand_forest(mode = "classification", mtry = tune(), 
+  trees = tune(), min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity")
+```
+
+```{r}
+log_wf <- workflow() %>% 
+  add_model(model_log) %>% 
+  add_recipe(mushroom_recipe)
+
+elastic_wf <- workflow() %>% 
+  add_recipe(mushroom_recipe) %>% 
+  add_model(model_elastic)
+
+tree_wf <- workflow() %>%
+  add_recipe(mushroom_recipe) %>%
+  add_model(model_tree)
+
+forest_wf <- workflow() %>%
+  add_recipe(mushroom_recipe) %>%
+  add_model(model_forest)
+```
+
+For the elastic net model, the penalty parameter was tuned over a log-scaled range for varying levels of regularization, while mixture ranged from 0 to 1 to test combinations of ridge and lasso penalties. 
+
+For the decision tree, the cost_complexity range was set between 0.001 and 0.1 on a logarithmic scale, enabling control over tree depth.
+
+```{r}
+elastic_grid <- grid_regular(penalty(range = c(-4, 0)),
+                             mixture(range = c(0, 1)), levels = 10)
+
+tree_grid <- grid_regular(cost_complexity(range = c(-3, -1)), levels = 10)
+
+forest_grid <- grid_regular(mtry(range = c(2, 17)), 
+                        trees(range = c(100, 1000)),
+                        min_n(range = c(2, 10)),
+                        levels = 10)
+```
+
+The random forest model included tuning for mtry (number of predictors sampled at each split), set from 2 to 17 to capture both narrow and wide feature sampling; trees (number of trees in the ensemble), varied between 100 and 1000 to assess stability and computational cost; and min_n (minimum nodes), ranged from 2 to 10 to influence how detailed each tree could grow. These choices were informed by the data's number of predictors and observations and the goal of achieving a good trade-off between bias and variance.
+
+```{r eval=FALSE, include=FALSE}
+log_fit <- fit(log_wf, data = mushroom_train)
+log_fold_fit <- fit_resamples(log_wf, mushroom_folds)
+collect_metrics(log_fold_fit)
+
+save(log_fit, log_fold_fit, file = "log_fit.rda")
+
+elastic_res <- tune_grid(
+  elastic_wf,
+  resamples = mushroom_folds,
+  grid = elastic_grid,
+  metrics = metric_set(roc_auc)
+)
+
+save(elastic_res, file = "elastic_res.rda")
+
+tree_res <- tune_grid(
+  tree_wf,
+  resamples = mushroom_folds,
+  grid = tree_grid,
+  metrics = metric_set(roc_auc)
+)
+
+save(tree_res, file = "tree_res.rda")
+
+forest_res <- tune_grid(
+  forest_wf,
+  resamples = mushroom_folds,
+  grid = forest_grid,
+  metrics = metric_set(roc_auc)
+)
+
+save(forest_res, file = "forest_res.rda")
+```
+
+
+# Model Results
+
+At this point, all models have been successfully trained and their results stored. We can load the saved results and examine each model's performance to compare how well they performed on identifying mushrooms' toxicity.
+
+```{r}
+load("log_fit.rda")
+load("elastic_res.rda")
+load("tree_res.rda")
+load("forest_res.rda")
+```
+
+## Logistic Regression
+
+Logistic regression is a good method used to predict whether something belongs to one of two groups. It looks at the features and estimates the probability that the item falls into a particular category.
+
+Looking at the roc curve, it seems that our logistic regression model performs really good, with roc_auc about equal to 1. The curve is a right angle above the diagonal line. I expected this as the model had a warning while running, being unable to converge. This means that the model results are unstable and not reliable. Overall, this model is not a good fit for our data.
+
+. 
+```{r}
+log_pred <- predict(log_fit, mushroom_test, type = "prob") %>%
+  bind_cols(mushroom_test %>% select(poisonous))
+names(log_pred)
+roc_data <- roc_curve(log_pred, truth = poisonous, .pred_e)
+
+autoplot(roc_data)
+```
+
+## Elastic Net
+
+For elastic net, we tuned the parameters penalty and mixture in 10 levels. In the graph, we can see that we get a better roc_auc (more area under the curve) when penalty is less and mixture is on the lower side. 
+
+```{r}
+autoplot(elastic_res)
+```
+
+## Decision Tree
+
+For the decision tree, we varied the cost complexity. According to the plot, we get greater roc_auc when cost complexity is less. Comparing this to the model above, it seems that elastic net performs better.
+
+```{r}
+autoplot(tree_res)
+```
+
+
+## Random Forest
+
+We tuned 3 hyperparameters for random forest: mtry, trees, and min_n. When trees and mtry is greater, and min_n is less, we get a greater roc_auc. It looks like we could have tried  a smaller mtry, since it stays about the same after 7 predictors. This seems like the best model so far. 
+
+```{r}
+autoplot(forest_res)
+```
+
+
+# Best-Fit Model Results
+
+Looking at the model results, the best model is definitely within the three modes: elastic net, random forest, and decision tree. Let's check right away:
+
+```{r}
+best_elastic <- select_best(elastic_res, metric = "roc_auc")
+best_elastic
+
+collect_metrics(elastic_res)
+
+final_elastic_wf <- finalize_workflow(elastic_wf, best_elastic)
+final_elastic_fit <- fit(final_elastic_wf, data = mushroom_train)
+```
+
+The best elastic model has penalty = 1e-04 and mixture = 1. We get the mean of 1 roc_auc with standard error = 0. 
+
+```{r}
+best_tree <- select_best(tree_res, metric = "roc_auc")
+best_tree
+
+collect_metrics(tree_res)
+```
+
+The best decision tree model has cost complexity = 0.001. We get the mean of 0.9906825 roc_auc with standard error = 0.003162148. 
+
+```{r}
+best_forest <- select_best(forest_res, metric = "roc_auc")
+best_forest
+
+collect_metrics(forest_res)
+
+final_forest_wf <- finalize_workflow(forest_wf, best_forest)
+final_forest_fit <- fit(final_forest_wf, data = mushroom_train)
+```
+
+The best decision tree model has mtry = 3, trees = 100. min_n = 2. We get the mean of 1 roc_auc with standard error = 0. 
+
+We have two best models! Elastic net and random forest both have mean roc_auc of 1 and standard error = 0. Now, the values seem too perfect to be true, so we might be overfitting. Let's test our best models' performance and see if we can predict mushroom toxicity accurately.
+
+```{r}
+elastic_pd <- augment(final_elastic_fit, mushroom_test, type = "prob") %>%
+  roc_auc(poisonous, .pred_e) %>%
+  select(.estimate)
+elastic_pd
+
+augment(final_elastic_fit, mushroom_test, type = "prob") %>%
+  roc_curve(poisonous, .pred_e) %>%
+  autoplot()
+
+augment(final_elastic_fit, mushroom_test, type = "prob") %>%
+  conf_mat(truth = poisonous, estimate = .pred_class) %>%
+  autoplot(type = "heatmap")
+```
+
+We get a final elastic net ROC AUC score of 0.9967307 on the testing data. This means that the model is super good at predicting whether a mushroom is toxic at all. It is very accurate. The confusion matrix shows that we get accurate predictions most of the time. 
+
+```{r}
+forest_pd <- augment(final_forest_fit, mushroom_test, type = "prob") %>%
+  roc_auc(poisonous, .pred_e) %>%
+  select(.estimate)
+forest_pd
+
+augment(final_forest_fit, mushroom_test, type = "prob") %>%
+  roc_curve(poisonous, .pred_e) %>%
+  autoplot()
+
+augment(final_forest_fit, mushroom_test, type = "prob") %>%
+  conf_mat(truth = poisonous, estimate = .pred_class) %>%
+  autoplot(type = "heatmap")
+```
+
+We get a final random forest ROC AUC score of 0.9999009 on the testing data. This means that the model is extremely good at predicting whether a mushroom is edible. Our confusion matrix also shows that we do get accurate predictions most of the time. 
+
+# Conclusion
+
+In this project, we utilized 4 different machine learning models to predict whether a mushroom is edible or poisonous based on its physical features. The models we used were logistic regression, elastic net, decision tree, and random forest. Among these, logistic regression performed poorly, failing to converge properly and resulting in an unreliable performance. In contrast, elastic net and random forest models performed very well with ROC AUC scores close to 1 in both cross-validation and testing data. The decision tree model also performed well, though slightly less accurate compared to elastic net and random forest. These results align with expectations, as methods like random forest often have an advantage with categorical data, while regularized regression can effectively handle multicollinearity and variable selection.
+
+Despite the near-perfect performance of elastic net and random forest, the ROC AUC scores might mean that there was still overfitting, especially given we did not work with the full dataset. We had to drop two variables due to only have one value for all data and missing data. In the future, we should use a larger dataset with better variable data, experimenting with other models such as support vector machines and neural networks. Overall, the project shows that machine learning can possibly accurately determine edible from poisonous mushrooms using physical features, which make mushroom consumption and harvesting safer.
+
+
+
