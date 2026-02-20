@@ -7,6 +7,7 @@ This project uses supervised machine learning to classify mushrooms as edible or
 - Compared model results to identify best fit
 
 ## 🚀 How to Run
+Go into `docs`
 Open `finalproject.html` to see full report
 
 OR
